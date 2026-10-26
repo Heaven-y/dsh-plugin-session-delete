@@ -1,6 +1,6 @@
 {
   "name": "@coder02lq/dsh-plugin-session-delete",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "description": "Permanently delete DeepSeek Harness Sessions from the sidebar, with confirmation, subagent cascade, and honest failure when files survive.",
   "keywords": [
     "dsh",
