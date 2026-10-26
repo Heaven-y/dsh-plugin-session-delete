@@ -1,0 +1,38 @@
+name: Publish
+
+# Publishing happens on a tag push, which is also what puts the release on
+# GitHub: one released version is one tag, and nothing else is a release.
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+
+permissions:
+  # Required for OIDC: this is what lets npm verify the workflow instead of
+  # asking for a one-time password the runner cannot provide.
+  id-token: write
+  contents: read
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          registry-url: 'https://registry.npmjs.org'
+          package-manager-cache: false
+
+      # The package has no dependencies, so there is nothing to install and no
+      # lockfile to install from; the suites run on the bare Node runtime.
+      - name: Test
+        run: npm test
+
+      # Trusted publishing: npm exchanges the OIDC token for the right to
+      # publish this one package, and records provenance for it. No npm token
+      # exists in this repository, so there is nothing to leak or rotate.
+      - name: Publish
+        run: npm publish --access public --provenance
