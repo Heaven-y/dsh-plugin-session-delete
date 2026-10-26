@@ -109,8 +109,11 @@ async function makeHost({ live = false, archived = false, locateBroken = false, 
     workspaceRegistry: registry,
     sessionPersistence: persistence,
     storageDomain: domain,
-    sessions: { get: () => (stillLive ? { id: SESSION } : undefined) },
-    agents: { get: () => undefined },
+    // Attached sessions: every Session the UI has loaded is here, idle or not,
+    // which is exactly the state that must not block a delete.
+    sessions: { get: () => ({ id: SESSION }) },
+    // Only a running Agent means a turn is in flight.
+    agents: { get: () => (stillLive ? { id: SESSION, status: 'running' } : { id: SESSION, status: 'idle' }) },
   }
 
   let service
@@ -178,16 +181,48 @@ async function makeHost({ live = false, archived = false, locateBroken = false, 
   console.log('ok 2 - already-archived Session: stops dispatched without re-archiving')
 }
 
-/* 3. A live Session is waited for, then deleted. */
+/* 3. A running turn is waited for, then deleted. */
 {
   const host = await makeHost({ live: true })
   setTimeout(host.stopLive, 250)
   const started = Date.now()
   await host.service.delete(SESSION)
-  assert.ok(Date.now() - started >= 200, 'the delete waited for teardown')
+  assert.ok(Date.now() - started >= 200, 'the delete waited for the running turn')
   assert.ok(!(await import('node:fs/promises').then((fs) => fs.stat(host.dir).then(() => true, () => false))))
   await rm(host.root, { recursive: true, force: true })
-  console.log('ok 3 - live Session: waits for teardown before removing files')
+  console.log('ok 3 - running turn: waits for it to finish before removing files')
+}
+
+/* 3b. An attached but idle Session deletes at once (the old bug: it stalled). */
+{
+  const host = await makeHost()
+  const started = Date.now()
+  await host.service.delete(SESSION)
+  const elapsed = Date.now() - started
+  assert.ok(elapsed < 1000, `an idle attached Session must not wait (took ${elapsed}ms)`)
+  await rm(host.root, { recursive: true, force: true })
+  console.log('ok 3b - attached-but-idle Session: deletes immediately')
+}
+
+/* 3c. A turn that never finishes fails fast, not after a silent stall. */
+{
+  const host = await makeHost({ live: true })
+  // The real bound is deliberately generous so a stopping turn can finish; here
+  // timers are clamped so the failure path is exercised in milliseconds.
+  const realSetTimeout = globalThis.setTimeout
+  globalThis.setTimeout = (callback) => realSetTimeout(callback, 1)
+  try {
+    await assert.rejects(() => host.service.delete(SESSION), (error) => {
+      assert.equal(error.code, 'session/busy')
+      assert.match(error.message, /still working/)
+      return true
+    })
+  } finally {
+    globalThis.setTimeout = realSetTimeout
+  }
+  assert.ok(host.calls.some((call) => call[0] === 'unarchiveSession'), 'the archive is rolled back')
+  await rm(host.root, { recursive: true, force: true })
+  console.log('ok 3c - stuck turn: session/busy with the archive rolled back')
 }
 
 /* 4. An id that nothing references is refused, and nothing is touched. */

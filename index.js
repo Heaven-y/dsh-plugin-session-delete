@@ -73,17 +73,20 @@ async function waitFor(predicate, timeoutMs) {
 }
 
 /**
- * Whether the Session is live in this Host: an in-memory Session or an Agent
- * holding its write lease. Either one makes deleting the log unsafe.
+ * Whether the Session has a turn in flight.
+ *
+ * The Agent's own lifecycle state is the only honest signal: `sessions.get()`
+ * returns any Session this Host has *attached*, which includes one that is merely
+ * open in a browser and completely idle. Gating on that made every delete of a
+ * loaded Session stall until the timeout.
  * @param ctx - Host context.
  * @param sessionId - Session to test.
- * @returns whether it is live.
+ * @returns whether an Agent for it is running a turn.
  */
-function isLive(ctx, sessionId) {
-  const sessions = ctx.get('sessions')
-  if (sessions !== undefined && sessions.get(sessionId) !== undefined) return true
+function isRunning(ctx, sessionId) {
   const agents = ctx.get('agents')
-  return agents !== undefined && agents.get(sessionId) !== undefined
+  const agent = agents === undefined ? undefined : agents.get(sessionId)
+  return agent !== undefined && agent.status === 'running'
 }
 
 /**
@@ -238,18 +241,19 @@ async function removeOne(ctx, sessionId, strict) {
     if (wasArchived) await registry.stopSessionActivity(sessionId)
     else await registry.archiveSession(sessionId, { stopActivity: true })
 
-    // 2. A live Session holds the write lease and the kernel lock. Its teardown
-    //    also flushes the projection cache, which must happen before step 4.
-    if (isLive(ctx, sessionId)) {
-      const stopped = await waitFor(() => !isLive(ctx, sessionId), STOP_TIMEOUT_MS)
-      if (!stopped) {
-        if (!wasArchived) await registry.unarchiveSession(sessionId)
-        throw remoteFailure(
-          'session/busy',
-          `Session "${sessionId}" is still shutting down. Try again in a moment.`,
-          { sessionId },
-        )
-      }
+    // 2. A Session that is mid-turn holds the write lease and will append to the
+    //    log, so its turn has to finish before the files go. Only `running` counts:
+    //    an attached Session that is merely open in a UI is idle, writes nothing,
+    //    and waiting on its presence — as this used to — blocked every delete of a
+    //    Session the sidebar had loaded until the timeout expired.
+    const stopped = await waitFor(() => !isRunning(ctx, sessionId), STOP_TIMEOUT_MS)
+    if (!stopped) {
+      if (!wasArchived) await registry.unarchiveSession(sessionId)
+      throw remoteFailure(
+        'session/busy',
+        `Session "${sessionId}" is still working. Wait for its turn to finish, then delete it.`,
+        { sessionId },
+      )
     }
   }
 

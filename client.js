@@ -28,6 +28,13 @@ window.__ModuleLoader__.load({
 .sd-warning-icon{flex:none;margin-top:1px}
 .sd-status{color:var(--dsw-alias-label-secondary);font-size:12px;line-height:18px}
 .sd-error{color:var(--dsw-alias-state-error-primary);font-size:12px;line-height:18px;overflow-wrap:anywhere}
+.sd-notice-layer{position:fixed;left:0;right:0;bottom:24px;display:flex;justify-content:center;pointer-events:none;z-index:2147483000}
+.sd-notice{pointer-events:auto;display:flex;align-items:center;gap:8px;max-width:min(560px,calc(100vw - 48px));padding:10px 14px;border-radius:8px;background:var(--dsw-alias-bg-elevated);border:1px solid var(--dsw-alias-border-l1);box-shadow:0 6px 20px rgba(0,0,0,.18);color:var(--dsw-alias-label-primary);font-size:13px;line-height:20px}
+.sd-notice-text{overflow-wrap:anywhere}
+.sd-notice-error{border-color:var(--dsw-alias-state-error-primary)}
+.sd-notice-error .sd-notice-text{color:var(--dsw-alias-state-error-primary)}
+.sd-notice-close{flex:none;display:inline-flex;align-items:center;justify-content:center;width:20px;height:20px;padding:0;border:0;background:transparent;color:var(--dsw-alias-label-secondary);cursor:pointer;border-radius:4px}
+.sd-notice-close:hover{background:var(--dsw-alias-bg-l2)}
 .sd-footer{display:flex;align-items:center;justify-content:flex-end;gap:8px;padding:0 24px}
 .sd-button{box-sizing:border-box;display:inline-flex;align-items:center;justify-content:center;gap:4px;border:none;border-radius:var(--dsw-radius-md);cursor:pointer;font-size:14px;line-height:22px;color:var(--dsw-alias-label-primary);background:transparent;padding:0 14px;height:36px}
 .sd-button:disabled{cursor:not-allowed;opacity:.4}
@@ -140,6 +147,70 @@ window.__ModuleLoader__.load({
     }
 
     /**
+     * Outcome of the last delete, shown as a transient notice. It lives apart from
+     * the dialog because the dialog closes the moment the user confirms: the
+     * delete can take seconds (stopping work, waiting for a turn, removing files),
+     * and leaving a modal on screen with every control disabled made the app look
+     * frozen and gave no way to cancel.
+     */
+    const notice = { value: null, listeners: new Set() }
+    let noticeTimer
+
+    /**
+     * Replace the notice and wake its readers, auto-clearing a success after a
+     * moment while keeping a failure until it is dismissed.
+     * @param next - notice to show, or null to clear it.
+     */
+    function setNotice(next) {
+      notice.value = next
+      for (const listener of notice.listeners) listener()
+      if (noticeTimer !== undefined) clearTimeout(noticeTimer)
+      noticeTimer = undefined
+      if (next !== null && next.kind !== 'error') {
+        noticeTimer = setTimeout(() => {
+          noticeTimer = undefined
+          if (notice.value === next) setNotice(null)
+        }, 4000)
+      }
+    }
+
+    /**
+     * Read the notice, re-rendering on change.
+     * @returns the current notice, or null.
+     */
+    function useNotice() {
+      const [, force] = React.useState(0)
+      React.useEffect(() => {
+        const listener = () => force((value) => value + 1)
+        notice.listeners.add(listener)
+        return () => {
+          notice.listeners.delete(listener)
+        }
+      }, [])
+      return notice.value
+    }
+
+    /**
+     * Run one delete and report its outcome. The confirmation is settled before
+     * the request starts, so the dialog is gone while the Host works.
+     * @param deleteSession - the delete hop.
+     * @param request - the confirmed request.
+     * @param t - locale lookup.
+     */
+    function runDelete(deleteSession, request, t) {
+      setPending(null)
+      setNotice({ kind: 'progress', text: t('notice.deleting', { title: request.displayTitle || request.sessionId }) })
+      deleteSession(request.sessionId).then(() => {
+        setNotice({ kind: 'done', text: t('notice.deleted') })
+      }).catch((reason) => {
+        setNotice({
+          kind: 'error',
+          text: reason instanceof Error ? reason.message : String(reason),
+        })
+      })
+    }
+
+    /**
      * One `...` menu row that opens the confirmation instead of deleting at once.
      * @param props - Session row identity, menu state, and the locale seat.
      * @returns the row.
@@ -208,93 +279,112 @@ window.__ModuleLoader__.load({
     }
 
     /**
-     * One confirmation's dialog. In-flight and failure state belong to the
-     * request, so they die with it.
-     * @param props - the request, the delete hop, and the locale seat.
+     * One confirmation's dialog.
+     *
+     * Confirming closes it and hands the work to `onConfirm`, which reports
+     * through the notice strip. Nothing here waits: the Host may spend seconds
+     * stopping a turn, and a modal that stays up with every control disabled
+     * reads as a frozen app.
+     * @param props - the request, the confirm handler, and the locale seat.
      * @returns the dialog element.
      */
-    function DeleteConfirmForm({ request, deleteSession, onSettle, t }) {
+    function DeleteConfirmForm({ request, onConfirm, onSettle, t }) {
       const dialogRef = React.useRef(null)
-      const [busy, setBusy] = React.useState(false)
-      const [error, setError] = React.useState(null)
       const close = React.useCallback(() => {
-        if (busy) return
         onSettle()
-      }, [busy, onSettle])
+      }, [onSettle])
       useDialogKeys(dialogRef, close)
-      const confirm = () => {
-        setBusy(true)
-        setError(null)
-        deleteSession(request.sessionId).then(() => {
-          setBusy(false)
-          onSettle()
-        }).catch((reason) => {
-          setBusy(false)
-          setError(reason instanceof Error ? reason.message : String(reason))
-        })
-      }
+
+      const title = request.displayTitle || request.sessionId
+      const header = h('div', { className: 'sd-header' },
+        h('h2', { className: 'sd-title' }, t('dialog.title')),
+        h('button', {
+          type: 'button',
+          className: 'sd-close',
+          'aria-label': t('close'),
+          onClick: close,
+        }, h(CloseIcon)))
+
+      const body = h('div', { className: 'sd-body' },
+        h('div', { className: 'sd-warning' },
+          h(WarningIcon, { size: 16, className: 'sd-warning-icon' }),
+          h('span', null, t('dialog.warning'))))
+
+      const footer = h('div', { className: 'sd-footer' },
+        h('button', {
+          type: 'button',
+          className: 'sd-button sd-outline',
+          onClick: close,
+        }, t('cancel')),
+        h('button', {
+          type: 'button',
+          className: 'sd-button sd-outline sd-danger',
+          onClick: () => {
+            close()
+            onConfirm(request, t)
+          },
+        }, t('dialog.action')))
+
+      const dialog = h('div', {
+        ref: dialogRef,
+        tabIndex: -1,
+        className: 'sd-dialog',
+        role: 'dialog',
+        'aria-modal': 'true',
+        'aria-label': t('dialog.title'),
+      },
+      h('div', { className: 'sd-content' },
+        header,
+        h('p', { className: 'sd-description' }, t('dialog.desc', { title })),
+        body,
+        footer))
+
       return createPortal(h('div', { className: 'sd-layer', role: 'presentation' },
         h('div', { className: 'sd-mask', 'aria-hidden': true, onClick: close }),
-        h('div', {
-          ref: dialogRef,
-          tabIndex: -1,
-          className: 'sd-dialog',
-          role: 'dialog',
-          'aria-modal': 'true',
-          'aria-label': t('dialog.title'),
-        },
-        h('div', { className: 'sd-content' },
-          h('div', { className: 'sd-header' },
-            h('h2', { className: 'sd-title' }, t('dialog.title')),
-            h('button', {
-              type: 'button',
-              className: 'sd-close',
-              'aria-label': t('close'),
-              disabled: busy,
-              onClick: close,
-            }, h(CloseIcon))),
-          h('p', { className: 'sd-description' },
-            t('dialog.desc', { title: request.displayTitle || request.sessionId })),
-          h('div', { className: 'sd-body' },
-            h('div', { className: 'sd-warning' },
-              h(WarningIcon, { size: 16, className: 'sd-warning-icon' }),
-              h('span', null, t('dialog.warning'))),
-            busy && h('div', { className: 'sd-status', role: 'status' }, t('dialog.pending')),
-            error !== null && h('div', { className: 'sd-error', role: 'alert' }, error))),
-          h('div', { className: 'sd-footer' },
-            h('button', {
-              type: 'button',
-              className: 'sd-button sd-outline',
-              disabled: busy,
-              onClick: close,
-            }, t('cancel')),
-            h('button', {
-              type: 'button',
-              className: 'sd-button sd-outline sd-danger',
-              disabled: busy,
-              onClick: confirm,
-            }, t('dialog.action'))))),
-      document.body)
+        dialog), document.body)
     }
 
     /**
-     * The `shell.overlay` entry: nothing while no confirmation is pending.
-     * @param props - the pending request hook, the delete hop, and the locale seat.
-     * @returns the open dialog, or null.
+     * The `shell.overlay` entry: the confirmation while one is pending, and the
+     * outcome notice while a delete is running or has just finished.
+     * @param props - the pending hook, the notice hook, the confirm handler, and the locale seat.
+     * @returns the open dialog and/or notice, or null.
      */
-    function DeleteSessionConfirmDialog({ usePendingRequest, deleteSession, t }) {
+    function DeleteSessionConfirmDialog({ usePendingRequest, useNoticeValue, onConfirm, t }) {
       const request = usePendingRequest()
+      const current = useNoticeValue()
       const settle = React.useCallback(() => {
         setPending(null)
       }, [])
-      if (request === null) return null
-      return h(DeleteConfirmForm, {
-        key: request.sessionId,
-        request,
-        deleteSession,
-        onSettle: settle,
-        t,
-      })
+      const noticeElement = current === null ? null : h('div', {
+        className: `sd-notice sd-notice-${current.kind}`,
+        role: current.kind === 'error' ? 'alert' : 'status',
+      },
+      h('span', { className: 'sd-notice-text' }, current.text),
+      current.kind === 'error' && h('button', {
+        type: 'button',
+        className: 'sd-notice-close',
+        'aria-label': t('close'),
+        onClick: () => setNotice(null),
+      }, h(CloseIcon)))
+      if (request === null) {
+        return noticeElement === null ? null : createPortal(
+          h('div', { className: 'sd-notice-layer', role: 'presentation' }, noticeElement),
+          document.body,
+        )
+      }
+      return h(React.Fragment, null,
+        h(DeleteConfirmForm, {
+          key: request.sessionId,
+          request,
+          onConfirm,
+          onSettle: settle,
+          t,
+        }),
+        noticeElement === null ? null : createPortal(
+          h('div', { className: 'sd-notice-layer', role: 'presentation' }, noticeElement),
+          document.body,
+        ))
     }
 
     /* ------------------------------------------------------------- dictionaries */
@@ -305,8 +395,9 @@ window.__ModuleLoader__.load({
       'dialog.title': '删除会话',
       'dialog.desc': '“{title}”将被永久删除。',
       'dialog.warning': '会话记录、投影缓存和侧边栏条目都会删除，正在运行的工作会先停止。此操作无法撤销。',
-      'dialog.pending': '正在删除…',
       'dialog.action': '永久删除',
+      'notice.deleting': '正在删除「{title}」…',
+      'notice.deleted': '会话已删除',
       'cancel': '取消',
       'close': '关闭',
     }
@@ -317,8 +408,9 @@ window.__ModuleLoader__.load({
       'dialog.title': 'Delete session',
       'dialog.desc': '“{title}” will be permanently deleted.',
       'dialog.warning': 'The log, projection cache and sidebar entry are removed, and running work is stopped first. This cannot be undone.',
-      'dialog.pending': 'Deleting…',
       'dialog.action': 'Delete permanently',
+      'notice.deleting': 'Deleting “{title}”…',
+      'notice.deleted': 'Session deleted',
       'cancel': 'Cancel',
       'close': 'Close',
     }
@@ -403,7 +495,8 @@ window.__ModuleLoader__.load({
           locale: LOCALE_NS,
           inject: () => ({
             usePendingRequest: usePending,
-            deleteSession: (sessionId) => callDelete(ctx, sessionId),
+            useNoticeValue: useNotice,
+            onConfirm: (request, t) => runDelete((sessionId) => callDelete(ctx, sessionId), request, t),
           }),
         }, DeleteSessionConfirmDialog)
       })

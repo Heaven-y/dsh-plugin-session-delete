@@ -153,7 +153,8 @@ assert.equal(overlay.options.id, 'session-delete-confirm')
 
 const injected = overlay.options.inject()
 assert.equal(typeof injected.usePendingRequest, 'function')
-assert.equal(typeof injected.deleteSession, 'function')
+assert.equal(typeof injected.useNoticeValue, 'function')
+assert.equal(typeof injected.onConfirm, 'function')
 console.log('ok 3 - menu row and overlay dialog are registered with their injected props')
 
 assert.equal(dictionaries.length, 1)
@@ -181,16 +182,18 @@ console.log('ok 5 - stylesheet inserted once, token colors only')
 
 /* ------------------------------------------------------- the call itself */
 
-await injected.deleteSession('s1')
+const t = (key, vars) => {
+  const raw = dictionaries[0].dicts.en[key] ?? key
+  return vars === undefined ? raw : raw.replace(/\{(\w+)\}/g, (_, name) => String(vars[name] ?? ''))
+}
+
+injected.onConfirm({ sessionId: 's1', displayTitle: 'Test row' }, t)
+await new Promise((resolve) => setTimeout(resolve, 30))
 assert.deepEqual(calls, ['s1'], 'the endpoint is called with the bare Session id')
 assert.equal(mounts.length, 1, 'no extra mount on a call')
+console.log('ok 6 - confirming forwards the bare id through the delete hop')
 
-deleteBehaviour = { ok: false, error: { message: 'Session "s1" is still shutting down.' } }
-await assert.rejects(() => injected.deleteSession('s1'), /still shutting down/, 'a failed call raises the Host message')
-
-console.log('ok 6 - delete forwards the bare id and surfaces Host failures')
-
-/* 7. A carrier without the namespace reports a readable failure, not a crash. */
+/* 7. A carrier without the namespace fails into the notice, not an unhandled rejection. */
 {
   const bare = {
     ...ctx,
@@ -199,11 +202,19 @@ console.log('ok 6 - delete forwards the bare id and surfaces Host failures')
   await exportsObject.apply(bare)
   const bareOverlay = registrations.at(-1)
   assert.equal(bareOverlay.options.id, 'session-delete-confirm')
-  await assert.rejects(
-    () => bareOverlay.options.inject().deleteSession('s3'),
-    /Host endpoint is not mounted/,
-  )
-  console.log('ok 7 - a missing namespace reports an actionable error')
+
+  const unhandled = []
+  const onUnhandled = (reason) => unhandled.push(reason)
+  process.on('unhandledRejection', onUnhandled)
+  try {
+    // Must not throw: the dialog closes first, and the failure is reported later.
+    bareOverlay.options.inject().onConfirm({ sessionId: 's3', displayTitle: 'x' }, t)
+    await new Promise((resolve) => setTimeout(resolve, 60))
+  } finally {
+    process.off('unhandledRejection', onUnhandled)
+  }
+  assert.deepEqual(unhandled, [], 'the missing endpoint is handled, not left unhandled')
+  console.log('ok 7 - a missing namespace is reported without an unhandled rejection')
 }
 
 console.log('\nall client harness checks passed')
