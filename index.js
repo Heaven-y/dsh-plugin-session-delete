@@ -29,8 +29,8 @@ import { dirname } from 'node:path'
 const REMOTE_METHOD_DESCRIPTOR = '@deepseek-ai/dsh-typert-protocol/remote-methods'
 /** Cordis service key; also the wire namespace, like `workspaceController` → `workspace`. */
 const SERVICE_KEY = 'sessionDelete'
-/** Upper bound for a live Session's teardown before the delete gives up. */
-const STOP_TIMEOUT_MS = 15000
+/** Upper bound for a running turn to stop before the delete gives up. */
+const STOP_TIMEOUT_MS = 8000
 /** Poll interval while waiting for that teardown. */
 const STOP_POLL_MS = 100
 /** Attempts at removing a Session directory held open by another process. */
