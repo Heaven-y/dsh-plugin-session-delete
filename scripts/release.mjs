@@ -19,6 +19,12 @@ const args = process.argv.slice(2)
 const dryRun = args.includes('--dry-run')
 const target = args.find((value) => !value.startsWith('--'))
 
+/**
+ * The npm launcher for this platform. Windows ships `npm.cmd`, and `execFile`
+ * does not go through a shell, so the bare name resolves to nothing there.
+ */
+const NPM = process.platform === 'win32' ? 'npm.cmd' : 'npm'
+
 /** Run a command in the repository root, returning its stdout. */
 function run(command, argv, { allowFailure = false } = {}) {
   try {
@@ -64,7 +70,7 @@ if (dryRun) {
 
 // `npm version` bumps the manifest, commits it and creates the annotated tag in
 // one step, so the tag can never point at a tree with a stale version.
-const tagged = run('npm', ['version', target, '-m', `chore(release): v%s`])
+const tagged = run(NPM, ['version', target, '-m', `chore(release): v%s`])
 console.log(`tagged: ${tagged}`)
 run('git', ['push', 'origin', 'HEAD', '--follow-tags'])
 console.log('\npushed. GitHub now shows the release, and the Publish workflow ships it to npm.')
