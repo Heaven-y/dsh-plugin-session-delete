@@ -29,13 +29,13 @@
   ],
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/coder02lq/dsh-session-delete.git"
+    "url": "git+https://github.com/coder02lq/dsh-plugin-session-delete.git"
   },
   "engines": {
     "node": ">=22"
   },
   "scripts": {
-    "test": "node --test test/"
+    "test": "node test/host.test.mjs && node test/client.test.mjs"
   },
   "dsh": {
     "bundle": {
