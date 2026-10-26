@@ -1,0 +1,5 @@
+# Session Delete bundle: one Host row carrying both halves. The Client half is
+# discovered from the package's `dsh.client` declaration, so it needs no row.
+- insert:
+    - id: session-delete
+      name: '@coder02lq/dsh-plugin-session-delete'
