@@ -111,13 +111,14 @@ async function makeHost({ live = false, archived = false, locateBroken = false, 
     storageDomain: domain,
     // Attached sessions: every Session the UI has loaded is here, idle or not,
     // which is exactly the state that must not block a delete.
-    sessions: { get: () => ({ id: SESSION }) },
+    sessions: { get: (id) => (id === SESSION ? { id: SESSION } : undefined) },
     // Only a running Agent means a turn is in flight.
-    agents: { get: () => (stillLive ? { id: SESSION, status: 'running' } : { id: SESSION, status: 'idle' }) },
+    agents: { get: (id) => (id === SESSION ? { id: SESSION, status: stillLive ? 'running' : 'idle' } : undefined) },
   }
 
   let service
   const registered = []
+  const emitted = []
   const ctx = {
     workspaceRegistry: registry,
     sessionPersistence: persistence,
@@ -131,9 +132,12 @@ async function makeHost({ live = false, archived = false, locateBroken = false, 
         registered.push(definition)
       },
     },
+    emit(event, payload) {
+      emitted.push([event, payload])
+    },
   }
   apply(ctx)
-  return { service, calls, root, dir, registered, registry, persistence, cacheRows,
+  return { service, calls, emitted, root, dir, registered, registry, persistence, cacheRows,
     stopLive: () => { stillLive = false } }
 }
 
@@ -320,6 +324,29 @@ async function makeHost({ live = false, archived = false, locateBroken = false, 
   assert.deepEqual(host.calls.filter((call) => call[0] !== 'provide'), [], 'a refused call mutates nothing')
   await rm(host.root, { recursive: true, force: true })
   console.log('ok 9 - tool refuses the caller\'s own Session')
+}
+
+/* 10. The Client is told to drop the row, so the sidebar stops drawing it. */
+{
+  const host = await makeHost({ children: ['session-child-0010'] })
+  await host.service.delete(SESSION)
+  const removals = host.emitted.filter(([event]) => event === 'api-session/removed').map(([, id]) => id)
+  assert.deepEqual(removals, [SESSION, 'session-child-0010'], 'root and every cascaded id are announced')
+  await rm(host.root, { recursive: true, force: true })
+  console.log('ok 10 - removal is announced to the Client for the root and each cascaded Session')
+}
+
+/* 11. Deleting a Session whose files are gone but which is still attached succeeds.
+   This is the state the sidebar leaves behind for a Session the UI has open:
+   the files are gone, yet the row (and the id) are still live in memory. */
+{
+  const host = await makeHost()
+  await host.service.delete(SESSION)
+  // Same id again: no log, no cache, no workspace row — but still attached.
+  const result = await host.service.delete(SESSION)
+  assert.deepEqual(result, { sessionId: SESSION, deleted: true, cascadedSessionIds: [] })
+  await rm(host.root, { recursive: true, force: true })
+  console.log('ok 11 - repeated delete of an attached, fileless Session succeeds instead of not-found')
 }
 
 console.log('\nall harness checks passed')

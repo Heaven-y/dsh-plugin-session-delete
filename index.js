@@ -73,6 +73,24 @@ async function waitFor(predicate, timeoutMs) {
 }
 
 /**
+ * Whether this Host still holds the Session in memory.
+ *
+ * An attached Session outlives its files: the sidebar lists whatever
+ * `sessions.list()` returns, and a Session the UI has opened stays attached until
+ * it is disposed. Deleting such a Session therefore cannot make the row disappear
+ * on its own, and a second delete would otherwise report `session/not-found` for
+ * an id the sidebar is still showing — which is exactly the confusing loop this
+ * guard exists to avoid.
+ * @param ctx - Host context.
+ * @param sessionId - Session to test.
+ * @returns whether a live Session object still exists.
+ */
+function isAttached(ctx, sessionId) {
+  const sessions = ctx.get('sessions')
+  return sessions !== undefined && sessions.get(sessionId) !== undefined
+}
+
+/**
  * Whether the Session has a turn in flight.
  *
  * The Agent's own lifecycle state is the only honest signal: `sessions.get()`
@@ -221,10 +239,12 @@ async function removeOne(ctx, sessionId, strict) {
   // Harness release may rename or drop them: resolve defensively and treat an
   // unavailable row as "nothing cached" instead of failing the delete.
   const cacheRows = openProjectionCache(ctx)
+  const attached = isAttached(ctx, sessionId)
   const referenced = registry.list().some((workspace) => workspace.sessionIds.includes(sessionId))
     || registry.archivedSessionIds.includes(sessionId)
     || registry.pinnedSessionIds.includes(sessionId)
     || cacheRows?.get(sessionId) !== undefined
+    || attached
   if (snapshot === undefined && !referenced) {
     if (strict) {
       throw remoteFailure('session/not-found', `Session "${sessionId}" does not exist.`, { sessionId })
@@ -324,6 +344,20 @@ async function deleteSession(ctx, rawId) {
     const headers = await registry.listStoredHeaders()
     await registry.replaceHeaderIndex(headers.filter((header) => !gone.has(header.id)))
     if (typeof registry.rebuildEntities === 'function') registry.rebuildEntities()
+  }
+
+  // 7. Tell the Client its row is gone. The shipped surfaces drop a Session row
+  //    when the Host announces `api-session/removed`, and that announcement is
+  //    otherwise only made when a Session is disposed — which never happens for a
+  //    Session the UI has open, because deleting its files does not detach it.
+  //    Without this the sidebar keeps drawing the deleted Session, and a second
+  //    delete then looks like it is failing on a row that no longer exists.
+  for (const id of [sessionId, ...removed]) {
+    try {
+      ctx.emit('api-session/removed', id)
+    } catch {
+      // A Host without the session API still deletes; only the live row refresh is lost.
+    }
   }
 
   return { sessionId, deleted: true, cascadedSessionIds: removed }
