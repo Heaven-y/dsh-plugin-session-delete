@@ -10,7 +10,7 @@
  * Usage: node scripts/release.mjs <patch|minor|major|x.y.z> [--dry-run]
  */
 import { execFileSync } from 'node:child_process'
-import { readFileSync } from 'node:fs'
+import { existsSync, readFileSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
 import { dirname, join } from 'node:path'
 
@@ -20,10 +20,19 @@ const dryRun = args.includes('--dry-run')
 const target = args.find((value) => !value.startsWith('--'))
 
 /**
- * The npm launcher for this platform. Windows ships `npm.cmd`, and `execFile`
- * does not go through a shell, so the bare name resolves to nothing there.
+ * The npm command as `[executable, prefixArgs]`. On Windows `npm` is a `.cmd`
+ * shim, which `execFile` refuses to spawn without a shell — so run npm's own
+ * JavaScript entry through the current Node binary instead. That is exactly what
+ * the shim does, minus the shell quoting.
+ * @returns the launch pair.
  */
-const NPM = process.platform === 'win32' ? 'npm.cmd' : 'npm'
+function npmCommand() {
+  if (process.platform !== 'win32') return ['npm', []]
+  const cli = join(dirname(process.execPath), 'node_modules', 'npm', 'bin', 'npm-cli.js')
+  return existsSync(cli) ? [process.execPath, [cli]] : ['npm.cmd', []]
+}
+
+const [NPM, NPM_PREFIX] = npmCommand()
 
 /** Run a command in the repository root, returning its stdout. */
 function run(command, argv, { allowFailure = false } = {}) {
@@ -70,7 +79,7 @@ if (dryRun) {
 
 // `npm version` bumps the manifest, commits it and creates the annotated tag in
 // one step, so the tag can never point at a tree with a stale version.
-const tagged = run(NPM, ['version', target, '-m', `chore(release): v%s`])
+const tagged = run(NPM, [...NPM_PREFIX, 'version', target, '-m', 'chore(release): v%s'])
 console.log(`tagged: ${tagged}`)
 run('git', ['push', 'origin', 'HEAD', '--follow-tags'])
 console.log('\npushed. GitHub now shows the release, and the Publish workflow ships it to npm.')
