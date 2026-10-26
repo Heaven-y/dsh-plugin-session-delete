@@ -43,7 +43,7 @@ dsh plugin --profile <profile> add @coder02lq/dsh-plugin-session-delete
 也可以直接从 GitHub 装（会锁定到具体 commit）：
 
 ```sh
-dsh plugin --profile <profile> add github:coder02lq/dsh-plugin-session-delete
+dsh plugin --profile <profile> add github:Heaven-y/dsh-plugin-session-delete
 ```
 
 ## 一次删除到底做了什么
